@@ -72,3 +72,5 @@ logs/
 .mcp_inspector/
 # Local mock agent data
 examples/mock_agent_data/
+# Per-developer MCP server config (project-level .mcp.json)
+.mcp.json
