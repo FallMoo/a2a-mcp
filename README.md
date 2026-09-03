@@ -21,7 +21,7 @@ uv sync --extra dev
 uv run python -m a2a_mcp
 ```
 
-Then configure your MCP client (e.g. Claude Desktop) — see [`examples/claude_desktop_config.json`](examples/claude_desktop_config.json).
+Then point your MCP client (e.g. Claude Desktop) at this command via its MCP server config.
 
 ### Environment variables
 
