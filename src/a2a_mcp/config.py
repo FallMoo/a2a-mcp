@@ -31,25 +31,23 @@ class Config:
     """Immutable runtime configuration.
 
     Environment variables:
-        A2A_MCP_TIMEOUT         - per-call timeout in seconds (default 60)
-        A2A_MCP_LOG_LEVEL       - logging level (default INFO)
-        A2A_MCP_PROTOCOL_BINDS  - comma-separated transport hints for A2A
-                                  negotiation (default "JSONRPC,HTTP+JSON").
-                                  GRPC is opt-in: requires `pip install a2a-sdk[grpc]`.
+        A2A_MCP_TIMEOUT    - per-call timeout in seconds (default 60)
+        A2A_MCP_LOG_LEVEL  - logging level (default INFO)
+
+    Protocol bindings are NOT a configuration knob: the a2a-sdk negotiates the
+    transport from the target Agent's AgentCard at call time. We pass the
+    full set of bindings the installed SDK supports (gRPC included when its
+    optional dependencies are installed).
     """
 
     timeout: int = 60
     log_level: str = "INFO"
-    protocol_bindings: tuple[str, ...] = ("JSONRPC", "HTTP+JSON")
 
     @classmethod
     def from_env(cls) -> "Config":
-        binds = _get_str("A2A_MCP_PROTOCOL_BINDS", "JSONRPC,HTTP+JSON")
-        bindings = tuple(b.strip() for b in binds.split(",") if b.strip())
         return cls(
             timeout=_get_int("A2A_MCP_TIMEOUT", 60),
             log_level=_get_str("A2A_MCP_LOG_LEVEL", "INFO").upper(),
-            protocol_bindings=bindings or ("JSONRPC",),
         )
 
 

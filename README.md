@@ -29,7 +29,10 @@ Then point your MCP client (e.g. Claude Desktop) at this command via its MCP ser
 |----------|---------|-------------|
 | `A2A_MCP_TIMEOUT` | `60` | Per-call timeout in seconds |
 | `A2A_MCP_LOG_LEVEL` | `INFO` | Logging level; logs go to stderr |
-| `A2A_MCP_PROTOCOL_BINDS` | `JSONRPC,GRPC,HTTP+JSON` | Ordered transport hints for A2A negotiation |
+
+Transport negotiation is automatic: at call time the SDK reads the target
+agent's AgentCard and picks a binding both sides support (JSONRPC, HTTP+JSON,
+GRPC if `a2a-sdk[grpc]` is installed).
 
 ## 🛠️ Tool: `call_agent`
 

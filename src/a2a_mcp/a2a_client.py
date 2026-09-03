@@ -24,6 +24,29 @@ from .types import ArtifactPart, ArtifactSummary, CallAgentInput, CallAgentResul
 
 logger = logging.getLogger(__name__)
 
+
+def available_protocol_bindings() -> list[str]:
+    """Return the protocol bindings the installed a2a-sdk can actually use.
+
+    JSONRPC and HTTP+JSON are always present (core SDK). GRPC is added only
+    when its optional dependency (`a2a-sdk[grpc]`) is installed. The result
+    is passed to ClientFactory, which then negotiates with the target
+    agent's AgentCard to pick a compatible transport — the user never has
+    to configure anything.
+    """
+    bindings = ["JSONRPC", "HTTP+JSON"]
+    try:
+        # Importing the gRPC transport module raises ImportError if
+        # grpcio is not installed. The import itself is sufficient — we
+        # don't need to instantiate anything.
+        from a2a.client.transports.grpc import GrpcTransport  # noqa: F401
+    except ImportError:
+        pass
+    else:
+        bindings.append("GRPC")
+    return bindings
+
+
 # Terminal task states (no further events expected). These end the aggregation loop.
 _TERMINAL_STATES = {
     "TASK_STATE_COMPLETED",
@@ -63,7 +86,7 @@ class A2AClient:
         client_config = ClientConfig(
             streaming=True,
             httpx_client=self._httpx,
-            supported_protocol_bindings=list(self._config.protocol_bindings),
+            supported_protocol_bindings=available_protocol_bindings(),
         )
         client = ClientFactory(client_config).create(card)
 
