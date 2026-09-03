@@ -14,14 +14,22 @@
 ## 🚀 Quick Start
 
 ```bash
-# Install
-uv add "mcp[cli]" "a2a-sdk"
+# Install (from project root)
+uv sync --extra dev
 
 # Run with stdio transport
-uv run mcp run src/a2a_mcp/server.py --transport stdio
+uv run python -m a2a_mcp
 ```
 
-Then configure your MCP client (e.g. Claude Desktop) to spawn this command.
+Then configure your MCP client (e.g. Claude Desktop) — see [`examples/claude_desktop_config.json`](examples/claude_desktop_config.json).
+
+### Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `A2A_MCP_TIMEOUT` | `60` | Per-call timeout in seconds |
+| `A2A_MCP_LOG_LEVEL` | `INFO` | Logging level; logs go to stderr |
+| `A2A_MCP_PROTOCOL_BINDS` | `JSONRPC,GRPC,HTTP+JSON` | Ordered transport hints for A2A negotiation |
 
 ## 🛠️ Tool: `call_agent`
 
