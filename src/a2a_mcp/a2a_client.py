@@ -18,11 +18,29 @@ import httpx
 from a2a.client.card_resolver import A2ACardResolver
 from a2a.client.client import Client, ClientConfig
 from a2a.client.client_factory import ClientFactory
+from google.protobuf.json_format import MessageToDict
+from google.protobuf.struct_pb2 import Value as PbValue
 
 from .config import Config
 from .types import ArtifactPart, ArtifactSummary, CallAgentInput, CallAgentResult
 
 logger = logging.getLogger(__name__)
+
+
+def _to_jsonable(value: Any) -> Any:
+    """Coerce an a2a/protobuf value into something Pydantic can serialize.
+
+    The a2a-sdk represents optional structured fields as
+    ``google.protobuf.struct_pb2.Value``. Even when the field is unset, accessing
+    it returns an empty ``Value`` (not None) which Pydantic's serializer
+    rejects. Convert unset Values to None and set ones to a plain Python
+    primitive via ``MessageToDict``. Pass everything else through unchanged.
+    """
+    if isinstance(value, PbValue):
+        if value.WhichOneof("kind") is None:
+            return None
+        return MessageToDict(value)
+    return value
 
 
 def available_protocol_bindings() -> list[str]:
@@ -262,11 +280,12 @@ class _ResponseAggregator:
     def _absorb_artifact(self, art: Any) -> None:
         parts: list[ArtifactPart] = []
         for p in art.parts:
+            data = _to_jsonable(getattr(p, "data", None))
             parts.append(
                 ArtifactPart(
                     text=getattr(p, "text", None) or None,
                     url=getattr(p, "url", None) or None,
-                    data=getattr(p, "data", None) or None,
+                    data=data,
                     filename=getattr(p, "filename", None) or None,
                     media_type=getattr(p, "media_type", None) or None,
                 )
