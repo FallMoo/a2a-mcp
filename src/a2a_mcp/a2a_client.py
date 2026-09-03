@@ -26,25 +26,14 @@ logger = logging.getLogger(__name__)
 
 
 def available_protocol_bindings() -> list[str]:
-    """Return the protocol bindings the installed a2a-sdk can actually use.
+    """Return the protocol bindings the installed a2a-sdk can use.
 
-    JSONRPC and HTTP+JSON are always present (core SDK). GRPC is added only
-    when its optional dependency (`a2a-sdk[grpc]`) is installed. The result
-    is passed to ClientFactory, which then negotiates with the target
-    agent's AgentCard to pick a compatible transport — the user never has
-    to configure anything.
+    All three bindings the a2a-sdk supports (JSONRPC, HTTP+JSON, GRPC) are
+    listed unconditionally because `a2a-sdk[grpc]` is a project dependency.
+    ClientFactory passes these to the target agent's AgentCard negotiation
+    to pick a compatible transport — the user never has to configure anything.
     """
-    bindings = ["JSONRPC", "HTTP+JSON"]
-    try:
-        # Importing the gRPC transport module raises ImportError if
-        # grpcio is not installed. The import itself is sufficient — we
-        # don't need to instantiate anything.
-        from a2a.client.transports.grpc import GrpcTransport  # noqa: F401
-    except ImportError:
-        pass
-    else:
-        bindings.append("GRPC")
-    return bindings
+    return ["JSONRPC", "HTTP+JSON", "GRPC"]
 
 
 # Terminal task states (no further events expected). These end the aggregation loop.
