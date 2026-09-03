@@ -259,6 +259,12 @@ class _ResponseAggregator:
                     media_type=getattr(p, "media_type", None) or None,
                 )
             )
+            text = getattr(p, "text", None)
+            if text:
+                # Fold artifact text into agent_response so MCP callers see
+                # the agent's full textual reply, even when the agent only
+                # emits artifacts (e.g. the A2A v1.0 hello-world reference).
+                self.agent_text_parts.append(text)
         summary = ArtifactSummary(
             artifact_id=art.artifact_id or uuid.uuid4().hex,
             name=art.name or "",

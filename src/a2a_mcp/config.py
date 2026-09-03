@@ -34,16 +34,17 @@ class Config:
         A2A_MCP_TIMEOUT         - per-call timeout in seconds (default 60)
         A2A_MCP_LOG_LEVEL       - logging level (default INFO)
         A2A_MCP_PROTOCOL_BINDS  - comma-separated transport hints for A2A
-                                  negotiation (default "JSONRPC,GRPC,HTTP+JSON")
+                                  negotiation (default "JSONRPC,HTTP+JSON").
+                                  GRPC is opt-in: requires `pip install a2a-sdk[grpc]`.
     """
 
     timeout: int = 60
     log_level: str = "INFO"
-    protocol_bindings: tuple[str, ...] = ("JSONRPC", "GRPC", "HTTP+JSON")
+    protocol_bindings: tuple[str, ...] = ("JSONRPC", "HTTP+JSON")
 
     @classmethod
     def from_env(cls) -> "Config":
-        binds = _get_str("A2A_MCP_PROTOCOL_BINDS", "JSONRPC,GRPC,HTTP+JSON")
+        binds = _get_str("A2A_MCP_PROTOCOL_BINDS", "JSONRPC,HTTP+JSON")
         bindings = tuple(b.strip() for b in binds.split(",") if b.strip())
         return cls(
             timeout=_get_int("A2A_MCP_TIMEOUT", 60),
