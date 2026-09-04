@@ -251,7 +251,9 @@ class _ResponseAggregator:
             # caller decides what to do with it (read .text, parse .data
             # as a form schema, etc.) — we don't synthesize or fold.
             if update.status.message is not None:
-                self.status_message = _to_status_message(update.status.message)
+                sm = _to_status_message(update.status.message)
+                if sm is not None:
+                    self.status_message = sm
 
         elif payload == "artifact_update":
             # StreamResponse.artifact_update is a TaskArtifactUpdateEvent
@@ -278,8 +280,14 @@ class _ResponseAggregator:
         # A 'task' event can carry its own status.message (e.g. when an
         # INPUT_REQUIRED task arrives before any status_update). Treat it
         # the same way we'd treat a status_update.status.message.
-        if task.status and task.status.message is not None and self.status_message is None:
-            self.status_message = _to_status_message(task.status.message)
+        if (
+            task.status
+            and task.status.message is not None
+            and self.status_message is None
+        ):
+            sm = _to_status_message(task.status.message)
+            if sm is not None:
+                self.status_message = sm
 
         # task.history is intentionally NOT inspected — many agents push
         # chain-of-thought onto the history channel, and we don't surface
@@ -319,8 +327,14 @@ class _ResponseAggregator:
         )
 
 
-def _to_status_message(msg: Any) -> StatusMessage:
-    """Convert an a2a.types.Message (or protobuf equivalent) to StatusMessage."""
+def _to_status_message(msg: Any) -> StatusMessage | None:
+    """Convert an a2a.types.Message (or protobuf equivalent) to StatusMessage.
+
+    Returns None if the message has no parts with content — the protobuf
+    spec always returns an empty Message container (not None) for an unset
+    status.message, but we'd rather surface ``None`` to callers than an
+    empty ``{"role":"","parts":[]}`` object.
+    """
     from a2a import types as a2a_types
 
     role = a2a_types.Role.Name(msg.role) if msg.role else ""
@@ -335,4 +349,6 @@ def _to_status_message(msg: Any) -> StatusMessage:
                 media_type=getattr(p, "media_type", None) or None,
             )
         )
+    if not parts:
+        return None
     return StatusMessage(role=role, parts=parts)
