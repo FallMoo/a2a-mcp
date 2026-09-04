@@ -18,9 +18,11 @@ import logging
 import sys
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from typing import Annotated
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.context import Context
+from pydantic import Field
 
 from .a2a_client import A2ACallError, A2AClient
 from .config import Config, configure_logging
@@ -73,19 +75,53 @@ mcp = MCPServer(
 
 @mcp.tool(name="call_agent", structured_output=True)
 async def call_agent(
-    agent_url: str,
-    text: str,
-    context_id: str | None = None,
-    metadata: dict[str, object] | None = None,
+    agent_url: Annotated[
+        str,
+        Field(description="Root URL of the target A2A agent (must be http/https)."),
+    ],
+    text: Annotated[
+        str,
+        Field(min_length=1, description="User message text to send."),
+    ],
+    context_id: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description=(
+                "Multi-turn dialog context ID; pass the same value back to "
+                "continue a session. Auto-generated if omitted."
+            ),
+        ),
+    ] = None,
+    metadata: Annotated[
+        dict[str, object] | None,
+        Field(
+            default=None,
+            description=(
+                "Free-form key/value pairs attached to the A2A Message.metadata "
+                "and forwarded as-is to the agent. The agent reads only the keys "
+                "it knows about; everything else is ignored. Typical uses: "
+                "tracing IDs, tenant/role hints, locale, A/B bucket, feature flags. "
+                "Most demo agents ignore this entirely; production agents usually "
+                "use it for routing, auth context, or observability."
+            ),
+        ),
+    ] = None,
     ctx: Context | None = None,
 ) -> CallAgentResult:
     """Send a message to an A2A agent and return its final result.
 
+    The response is a pass-through view of the A2A protocol — `artifacts`
+    holds what the agent emitted as artifacts; `status_message` holds the
+    structured message attached to the final status (e.g. a form schema
+    when `state == TASK_STATE_INPUT_REQUIRED`). See CallAgentResult's
+    docstring for the full contract.
+
     Args:
         agent_url: Root URL of the target A2A agent (http/https).
         text: User message text to send.
-        context_id: Optional multi-turn dialog context ID; auto-generated if omitted.
-        metadata: Optional free-form metadata forwarded to the agent.
+        context_id: Multi-turn dialog context ID; auto-generated if omitted.
+        metadata: Free-form key/value pairs forwarded to the agent.
 
     Returns:
         CallAgentResult with task_id, context_id, state, artifacts, and the
