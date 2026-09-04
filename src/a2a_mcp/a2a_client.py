@@ -299,11 +299,19 @@ class _ResponseAggregator:
     def _absorb_artifact(self, art: Any) -> None:
         parts: list[ArtifactPart] = []
         for p in art.parts:
+            raw = getattr(p, "raw", None) or None
+            # `Part.metadata` is a google.protobuf.Struct; coerce to a plain
+            # dict (or None) so Pydantic can serialize it.
+            metadata = _to_jsonable(getattr(p, "metadata", None))
+            if isinstance(metadata, dict) and not metadata:
+                metadata = None
             parts.append(
                 ArtifactPart(
                     text=getattr(p, "text", None) or None,
+                    raw=raw if raw else None,
                     url=getattr(p, "url", None) or None,
                     data=_to_jsonable(getattr(p, "data", None)),
+                    metadata=metadata,
                     filename=getattr(p, "filename", None) or None,
                     media_type=getattr(p, "media_type", None) or None,
                 )
@@ -340,10 +348,16 @@ def _to_status_message(msg: Any) -> StatusMessage | None:
     role = a2a_types.Role.Name(msg.role) if msg.role else ""
     parts: list[StatusMessagePart] = []
     for p in msg.parts:
+        raw = getattr(p, "raw", None) or None
+        metadata = _to_jsonable(getattr(p, "metadata", None))
+        if isinstance(metadata, dict) and not metadata:
+            metadata = None
         parts.append(
             StatusMessagePart(
                 text=getattr(p, "text", None) or None,
+                raw=raw if raw else None,
                 data=_to_jsonable(getattr(p, "data", None)),
+                metadata=metadata,
                 url=getattr(p, "url", None) or None,
                 filename=getattr(p, "filename", None) or None,
                 media_type=getattr(p, "media_type", None) or None,

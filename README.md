@@ -110,13 +110,46 @@ as every other field on the wire.
       "name": "summary",
       "description": "",
       "parts": [
-        {"text": "• Discovery via Agent Card\n• Async tasks with streaming\n• JSON-RPC + HTTP+REST + gRPC transports", "url": null, "data": null, "filename": null, "media_type": null}
+        {"text": "• Discovery via Agent Card\n• Async tasks with streaming\n• JSON-RPC + HTTP+REST + gRPC transports", "raw": null, "url": null, "data": null, "metadata": null, "filename": null, "media_type": null}
       ]
     }
   ],
   "status_message": null
 }
 ```
+
+### Example Response — artifact carrying a binary file (image / PDF / report)
+
+```json
+{
+  "task_id": "f1ecb522-...",
+  "state": "TASK_STATE_COMPLETED",
+  "artifacts": [
+    {
+      "artifact_id": "...",
+      "name": "report",
+      "parts": [
+        {
+          "text": null,
+          "raw": "iVBORw0KGgoAA...AA==",   ← base64 string in JSON
+          "url": null,
+          "data": null,
+          "metadata": {"source": "scanner", "page_count": 12},
+          "filename": "report.pdf",
+          "media_type": "application/pdf"
+        }
+      ]
+    }
+  ],
+  "status_message": null
+}
+```
+
+Each part has six nullable fields — one per A2A `Part` oneof / field:
+`text`, `raw` (bytes — base64 in JSON), `url`, `data` (structured Value →
+dict), `metadata` (Part-level free-form k/v), `filename`, `media_type`.
+a2a-mcp surfaces all of them pass-through; pick whichever channel the
+agent used.
 
 ### Example Response — INPUT_REQUIRED (structured form schema)
 

@@ -211,3 +211,46 @@ def test_task_artifacts_are_passed_through():
     assert len(result.artifacts) == 1
     assert result.artifacts[0].name == "receipt"
     assert result.artifacts[0].parts[0].text == "paid $20"
+
+
+def test_artifact_raw_bytes_are_preserved_and_base64_serialized():
+    """Binary artifact parts (PDF / image / audio) must round-trip via base64."""
+    payload = b"\x89PNG\r\n\x1a\n fake png bytes"
+    art = a2a_types.Artifact(
+        artifact_id="a-bytes",
+        name="chart.png",
+        description="",
+        parts=[a2a_types.Part(raw=payload, media_type="image/png", filename="chart.png")],
+    )
+    agg = _ResponseAggregator()
+    agg.feed(_stream("artifact_update", artifact_update=a2a_types.TaskArtifactUpdateEvent(task_id="t-1", artifact=art)))
+    agg.feed(_status_update("t-1", "TASK_STATE_COMPLETED"))
+    result = agg.to_result()
+    part = result.artifacts[0].parts[0]
+    assert part.raw == payload           # in-process: still bytes
+    assert part.media_type == "image/png"
+    assert part.filename == "chart.png"
+    # JSON output: bytes -> base64 string
+    import base64
+    dumped = result.model_dump(mode="json")
+    assert dumped["artifacts"][0]["parts"][0]["raw"] == base64.b64encode(payload).decode("ascii")
+
+
+def test_artifact_part_metadata_passed_through():
+    """The Part-level metadata field must surface as a dict, not be dropped."""
+    art = a2a_types.Artifact(
+        artifact_id="a-meta",
+        name="report",
+        description="",
+        parts=[a2a_types.Part(text="body", media_type="text/plain")],
+    )
+    # Manually set the metadata on the part (proto field).
+    art.parts[0].metadata.update({"source": "scanner", "confidence": 0.87})
+    agg = _ResponseAggregator()
+    agg.feed(_stream("artifact_update", artifact_update=a2a_types.TaskArtifactUpdateEvent(task_id="t-1", artifact=art)))
+    agg.feed(_status_update("t-1", "TASK_STATE_COMPLETED"))
+    result = agg.to_result()
+    assert result.artifacts[0].parts[0].metadata == {
+        "source": "scanner",
+        "confidence": 0.87,
+    }

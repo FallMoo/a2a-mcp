@@ -13,17 +13,46 @@ the channel they care about and concatenate themselves.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, Field, HttpUrl, field_validator
+from pydantic import BaseModel, Field, HttpUrl, PlainSerializer, field_validator
+
+
+def _b64(v: bytes | None) -> str | None:
+    """Serialize ``bytes`` to a base64 string for JSON consumers.
+
+    MCP delivers tool results as JSON, which has no native bytes — base64 is
+    the standard encoding, recognized by every language's JSON library.
+    """
+    import base64
+
+    if v is None:
+        return None
+    return base64.b64encode(v).decode("ascii")
+
+
+# Annotated alias for "bytes field that serializes to base64 in JSON".
+RawBytesField = Annotated[
+    bytes | None,
+    PlainSerializer(_b64, return_type=str | None, when_used="json"),
+]
 
 
 class ArtifactPart(BaseModel):
-    """A single part within an artifact (text / file / data)."""
+    """A single part within an artifact (text / file / data).
+
+    Mirrors ``a2a.types.Part`` — every oneof is exposed as its own nullable
+    attribute, so callers can read whichever channel the agent used. The
+    protobuf ``raw`` (bytes) field is exposed as ``raw``; in JSON output it
+    serializes to a base64 string so MCP consumers (which speak JSON only)
+    can decode it. Pass-through: no synthesis across channels.
+    """
 
     text: str | None = None
+    raw: RawBytesField = None
     url: str | None = None
     data: Any = None
+    metadata: dict[str, Any] | None = None
     filename: str | None = None
     media_type: str | None = None
 
@@ -42,11 +71,14 @@ class StatusMessagePart(BaseModel):
 
     Mirrors ``a2a.types.Part`` but with the protobuf ``Value`` already
     coerced into plain Python primitives so the result serializes cleanly.
+    The ``raw`` bytes field base64-encodes to a string in JSON output.
     """
 
     text: str | None = None
-    data: Any = None
+    raw: RawBytesField = None
     url: str | None = None
+    data: Any = None
+    metadata: dict[str, Any] | None = None
     filename: str | None = None
     media_type: str | None = None
 
