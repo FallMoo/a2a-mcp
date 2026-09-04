@@ -17,11 +17,25 @@
 # Install (from project root)
 uv sync --extra dev
 
-# Run with stdio transport
+# Run with stdio transport (default — for Claude Desktop, MCP Inspector)
 uv run python -m a2a_mcp
+
+# Or run with streamable-http transport (for remote MCP clients)
+uv run python -m a2a_mcp --transport streamable-http --host 0.0.0.0 --port 8000
 ```
 
-Then point your MCP client (e.g. Claude Desktop) at this command via its MCP server config.
+Then point your MCP client at it. For stdio, point Claude Desktop's MCP
+server config at the `a2a-mcp` command. For streamable-http, point the
+client at `http://<host>:<port>/mcp`.
+
+### CLI flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--transport` | `stdio` | MCP transport: `stdio` or `streamable-http` |
+| `--host` | `127.0.0.1` | HTTP bind host (streamable-http only) |
+| `--port` | `8000` | HTTP bind port (streamable-http only) |
+| `--path` | `/mcp` | HTTP endpoint path (streamable-http only) |
 
 ### Environment variables
 
@@ -29,10 +43,17 @@ Then point your MCP client (e.g. Claude Desktop) at this command via its MCP ser
 |----------|---------|-------------|
 | `A2A_MCP_TIMEOUT` | `60` | Per-call timeout in seconds |
 | `A2A_MCP_LOG_LEVEL` | `INFO` | Logging level; logs go to stderr |
+| `A2A_MCP_TRANSPORT` | `stdio` | Same as `--transport`; CLI flag takes precedence |
+| `A2A_MCP_HTTP_HOST` | `127.0.0.1` | Same as `--host`; CLI flag takes precedence |
+| `A2A_MCP_HTTP_PORT` | `8000` | Same as `--port`; CLI flag takes precedence |
+| `A2A_MCP_HTTP_PATH` | `/mcp` | Same as `--path`; CLI flag takes precedence |
 
-Transport negotiation is automatic: at call time the SDK reads the target
-agent's AgentCard and picks a binding both sides support (JSONRPC, HTTP+JSON,
-GRPC if `a2a-sdk[grpc]` is installed).
+Precedence for all of the above: **CLI flag > env var > built-in default**.
+
+Transport negotiation (between a2a-mcp and the target A2A agent) is
+automatic: at call time the SDK reads the target agent's AgentCard and
+picks a binding both sides support (JSONRPC, HTTP+JSON, GRPC if
+`a2a-sdk[grpc]` is installed).
 
 ## 🛠️ Tool: `call_agent`
 
@@ -135,7 +156,7 @@ use case needs them, add an explicit opt-in field rather than re-synthesizing.
 
 - [x] v0.1 — stdio + auto protocol negotiation + streamed aggregation
 - [x] v0.2 — Pass-through response model: `artifacts` + `status_message` (no `agent_response` synthesis); INPUT_REQUIRED form schema exposed structured
-- [ ] v0.3 — Streamable HTTP transport
+- [x] v0.3 — Streamable HTTP transport (`--transport streamable-http`)
 - [ ] v0.4 — True streaming via MCP progress events
 - [ ] v0.5 — Multi-agent registry
 - [ ] v0.6 — Auth passthrough (Bearer / OAuth / mTLS)

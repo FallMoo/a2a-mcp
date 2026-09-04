@@ -1,6 +1,6 @@
 # A2A-MCP 设计文档
 
-> 版本：v0.2（实现稿）
+> 版本：v0.3（实现稿）
 > 日期：2026-09-04
 > 状态：已实现，校准文档
 
@@ -101,12 +101,27 @@ MCP Client                                  a2a-mcp                             
 
 ### 3.2 MCP 传输分阶段
 
-| 阶段 | 传输 | 启动方式 | 进度 |
+| 阶段 | 传输 | 启动方式 | 状态 |
 |------|------|---------|------|
-| MVP | stdio | `mcp run src/a2a_mcp/server.py --transport stdio` | v0.1 |
-| v0.2 | Streamable HTTP | `mcp run ... --transport streamable-http --port 8080` | 后续 |
+| MVP | stdio | `python -m a2a_mcp`（或显式 `--transport stdio`）| v0.1，已发布 |
+| v0.3 | Streamable HTTP | `python -m a2a_mcp --transport streamable-http --host 0.0.0.0 --port 8000` | v0.3，已发布 |
 
-切换传输**无需修改业务代码**，仅改变启动命令。
+切换传输**无需修改业务代码**，仅改变启动命令或 `--transport` 标志。
+
+**配置优先级：**CLI flag > 环境变量 > 内置默认值。所有 HTTP 相关设置都支持两种方式覆盖：
+
+```bash
+# 通过 CLI 覆盖
+python -m a2a_mcp --transport streamable-http --host 0.0.0.0 --port 9000 --path /api/mcp
+
+# 通过环境变量（适合容器化部署）
+A2A_MCP_TRANSPORT=streamable-http A2A_MCP_HTTP_PORT=9000 python -m a2a_mcp
+```
+
+**HTTP 模式约束（v0.3）：**
+- 默认绑定 `127.0.0.1`；要远程访问需显式 `--host 0.0.0.0`（明示不安全，避免误暴露）
+- 不带 auth；鉴权代理放到上游 nginx / Envoy（v0.6 再做 MCP 原生 auth）
+- 单一进程、单 httpx 客户端；并发请求共享连接池，单请求超时仍受 `A2A_MCP_TIMEOUT` 控制
 
 ---
 
@@ -283,7 +298,7 @@ a2a-mcp/
 |------|------|------|
 | v0.1 | stdio + 自动协商 + 流式聚合 + 核心字段（`agent_response` 合成） | 已发布（commits 46da7b5 之前） |
 | v0.2 | **Pass-through 重构**：去掉 `agent_response` 合成，新增 `status_message` 结构化通道；INPUT_REQUIRED 的 form schema 暴露为 dict | 已发布（commits cfe576d / 3e2bcf1 / 000944f） |
-| v0.3 | Streamable HTTP transport | 待启动 |
+| v0.3 | Streamable HTTP transport；CLI flags + 环境变量双轨配置 | 已发布（当前 commit） |
 | v0.4 | 流式返回（增量 token 推送，需 MCP 侧 SSE 支持） | 待启动 |
 | v0.5 | 多 Agent 注册中心（yaml 配置 + agent_id 路由） | 待启动 |
 | v0.6 | 鉴权代理（Bearer / OAuth / mTLS 透传） | 待启动 |

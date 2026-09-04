@@ -1,12 +1,19 @@
 """MCP server entrypoint.
 
 Exposes a single tool `call_agent` that delegates to A2AClient. Supports
-stdio transport (default) and streamable-http / sse transports when
-launched through the mcp CLI (`mcp run server.py --transport ...`).
+two MCP transports:
+
+  * ``stdio`` (default) — for Claude Desktop, MCP Inspector, etc.
+  * ``streamable-http`` — for remote MCP clients; binds a uvicorn server.
+
+The transport is selected by ``--transport`` on the CLI or
+``A2A_MCP_TRANSPORT`` in the environment. HTTP-mode host / port / path
+follow the same precedence: CLI flag > env var > default.
 """
 
 from __future__ import annotations
 
+import argparse
 import logging
 import sys
 from collections.abc import AsyncIterator, Callable
@@ -27,6 +34,14 @@ _SERVER_INSTRUCTIONS = (
     "with a target agent_url and a text message to invoke any A2A-compliant "
     "agent and receive its final result."
 )
+
+# CLI defaults; env vars (read via Config.from_env) override when CLI flags
+# are not provided, so existing deployments keep working without flags.
+_HTTP_DEFAULTS = {
+    "host": "127.0.0.1",
+    "port": 8000,
+    "path": "/mcp",
+}
 
 
 def _make_lifespan() -> Callable[[MCPServer], AbstractAsyncContextManager[dict[str, object]]]:
@@ -81,8 +96,8 @@ async def call_agent(
         metadata: Optional free-form metadata forwarded to the agent.
 
     Returns:
-        CallAgentResult with task_id, context_id, state, agent_response,
-        and any artifacts produced by the agent.
+        CallAgentResult with task_id, context_id, state, artifacts, and the
+        structured status_message attached to the final status (if any).
 
     Raises:
         ToolError: when the A2A call fails (connection, protocol, agent error).
@@ -105,9 +120,83 @@ async def call_agent(
         raise
 
 
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="a2a-mcp",
+        description="MCP server that bridges MCP clients to A2A agents.",
+    )
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "streamable-http"],
+        default=None,
+        help="MCP transport (default: stdio; or $A2A_MCP_TRANSPORT).",
+    )
+    parser.add_argument(
+        "--host",
+        default=None,
+        help="HTTP host for streamable-http (default: 127.0.0.1; or $A2A_MCP_HTTP_HOST).",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="HTTP port for streamable-http (default: 8000; or $A2A_MCP_HTTP_PORT).",
+    )
+    parser.add_argument(
+        "--path",
+        default=None,
+        help="Streamable-HTTP path (default: /mcp; or $A2A_MCP_HTTP_PATH).",
+    )
+    return parser
+
+
+def _resolve_cli_overrides(argv: list[str] | None = None) -> dict[str, object]:
+    """Parse argv, returning overrides for the bits that were explicitly set.
+
+    Anything not on the CLI leaves the env-var-driven Config values intact.
+    The `argv` parameter is exposed for tests; `main()` passes nothing and
+    argparse falls back to ``sys.argv[1:]``.
+    """
+    parser = _build_arg_parser()
+    args = parser.parse_args(argv)
+    overrides: dict[str, object] = {}
+    if args.transport is not None:
+        overrides["transport"] = args.transport
+    if args.host is not None:
+        overrides["host"] = args.host
+    if args.port is not None:
+        overrides["port"] = args.port
+    if args.path is not None:
+        overrides["path"] = args.path
+    return overrides
+
+
 def main() -> None:
     """Synchronous entrypoint for `python -m a2a_mcp` or the `a2a-mcp` script."""
-    mcp.run(transport="stdio")
+    cli = _resolve_cli_overrides()
+    config = Config.from_env()
+
+    transport = cli.get("transport", config.transport)
+    if transport == "stdio":
+        mcp.run(transport="stdio")
+        return
+
+    # streamable-http branch
+    host = cli.get("host", config.http_host)
+    port = cli.get("port", config.http_port)
+    path = cli.get("path", config.http_path)
+    logger.info(
+        "a2a-mcp listening on http://%s:%d%s (streamable-http)",
+        host,
+        port,
+        path,
+    )
+    mcp.run(
+        transport="streamable-http",
+        host=host,
+        port=port,
+        streamable_http_path=path,
+    )
 
 
 if __name__ == "__main__":
@@ -118,16 +207,21 @@ if __name__ == "__main__":
 
 
 # ---------------------------------------------------------------------------
-# Why a `ctx: Context` parameter on the tool, and `lifespan=` at construction?
+# Design notes:
 #
-# In mcp 2.x, per-request state (including lifespan-managed resources) is
-# exposed via the active RequestContext that the framework injects into
-# tool functions. `MCPServer` itself does not have a `request_context`
-# attribute; only the per-request Context does. Likewise, `lifespan` is a
-# constructor argument on `MCPServer` — it cannot be passed to `mcp.run()`
-# the way it was in earlier versions.
+#   * In mcp 2.x, per-request state (including lifespan-managed resources)
+#     is exposed via the active RequestContext that the framework injects
+#     into tool functions. `MCPServer` itself does not have a
+#     `request_context` attribute; only the per-request Context does.
+#     Likewise, `lifespan` is a constructor argument on `MCPServer` — it
+#     cannot be passed to `mcp.run()` the way it was in earlier versions.
 #
-# We attach the singleton A2AClient and Config through the lifespan callback
-# so concurrent tool calls share the same httpx connection pool without
-# re-creating it per call.
+#   * For HTTP transport we keep the same singleton A2AClient on the
+#     lifespan, so concurrent tool calls share one httpx connection pool.
+#     The singleton's per-call timeout (`A2A_MCP_TIMEOUT`) still bounds
+#     each request — long-running agents should use multi-turn instead.
+#
+#   * CLI flags take precedence over env vars; env vars take precedence
+#     over the hard-coded defaults. This lets operators override the
+#     `.mcp.json` baked-in settings without editing the file.
 # ---------------------------------------------------------------------------
