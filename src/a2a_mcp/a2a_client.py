@@ -4,13 +4,14 @@ Responsibilities:
     1. Resolve AgentCard (auto-protocol negotiation between v1.0 and v0.3).
     2. Build and dispatch a SendMessageRequest.
     3. Iterate the streaming response, aggregating events into a final Task.
-    4. Extract a normalized CallAgentResult for the MCP caller.
+    4. Extract a normalized CallAgentResult for the MCP caller — by
+       passing through the channels the agent actually emitted (artifacts,
+       final status message) without folding or merging.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import uuid
 from typing import Any
@@ -23,19 +24,27 @@ from google.protobuf.json_format import MessageToDict
 from google.protobuf.struct_pb2 import Value as PbValue
 
 from .config import Config
-from .types import ArtifactPart, ArtifactSummary, CallAgentInput, CallAgentResult
+from .types import (
+    ArtifactPart,
+    ArtifactSummary,
+    CallAgentInput,
+    CallAgentResult,
+    StatusMessage,
+    StatusMessagePart,
+)
 
 logger = logging.getLogger(__name__)
 
 
 def _to_jsonable(value: Any) -> Any:
-    """Coerce an a2a/protobuf value into something Pydantic can serialize.
+    """Convert an a2a/protobuf value into something Pydantic can serialize.
 
     The a2a-sdk represents optional structured fields as
-    ``google.protobuf.struct_pb2.Value``. Even when the field is unset, accessing
-    it returns an empty ``Value`` (not None) which Pydantic's serializer
-    rejects. Convert unset Values to None and set ones to a plain Python
-    primitive via ``MessageToDict``. Pass everything else through unchanged.
+    ``google.protobuf.struct_pb2.Value``. Even when the field is unset,
+    accessing it returns an empty ``Value`` (not None) which Pydantic's
+    serializer rejects. Convert unset Values to None and set ones to a
+    plain Python primitive via ``MessageToDict``. Pass everything else
+    through unchanged.
     """
     if isinstance(value, PbValue):
         if value.WhichOneof("kind") is None:
@@ -55,24 +64,12 @@ def available_protocol_bindings() -> list[str]:
     return ["JSONRPC", "HTTP+JSON", "GRPC"]
 
 
-# Terminal task states (no further events expected). These end the aggregation loop.
+# Terminal task states (no further events expected). These end the
+# aggregation loop in A2ACall._consume_stream.
 _TERMINAL_STATES = {
     "TASK_STATE_COMPLETED",
     "TASK_STATE_FAILED",
     "TASK_STATE_CANCELED",
-    "TASK_STATE_REJECTED",
-    "TASK_STATE_INPUT_REQUIRED",
-    "TASK_STATE_AUTH_REQUIRED",
-}
-
-# "Interrupted" terminal states: the task is over from the aggregator's
-# perspective, but the agent embedded a human-facing message in the
-# final status (a failure reason, an auth challenge, or the next
-# question it needs answered). The status message must surface as
-# `agent_response` — otherwise callers see an empty reply and have no
-# way to know what the agent is asking.
-_INTERRUPTED_STATES = {
-    "TASK_STATE_FAILED",
     "TASK_STATE_REJECTED",
     "TASK_STATE_INPUT_REQUIRED",
     "TASK_STATE_AUTH_REQUIRED",
@@ -84,7 +81,7 @@ class A2ACallError(RuntimeError):
 
 
 class A2AClient:
-    """Thin wrapper around a2a-sdk's ClientFactory with aggregated semantics.
+    """Thin wrapper around a2a-sdk's ClientFactory with pass-through semantics.
 
     Each call_agent invocation gets its own client so AgentCard resolution and
     protocol negotiation are scoped to the current target agent URL.
@@ -203,17 +200,27 @@ def _build_send_request(message: Any) -> Any:
 
 
 class _ResponseAggregator:
-    """Collects StreamResponse events and produces a final CallAgentResult."""
+    """Collects StreamResponse events into the channels CallAgentResult exposes.
+
+    Channels collected:
+      * identifiers: task_id, context_id, state
+      * artifacts: every artifact, latest-version-per-id (no fold / no merge)
+      * status_message: the message attached to the final status update
+        (typically only set on INPUT_REQUIRED / FAILED / AUTH_REQUIRED)
+
+    Channels NOT collected: message-channel text and task.history. Many
+    agents push chain-of-thought onto those, and we deliberately don't
+    surface reasoning as "the agent's reply" — callers that need it should
+    request a field explicitly in a future revision.
+    """
 
     def __init__(self) -> None:
         self.task_id: str = ""
         self.context_id: str = ""
         self.state: str = "TASK_STATE_UNSPECIFIED"
-        self.agent_text_parts: list[str] = []
         self.artifacts: dict[str, ArtifactSummary] = {}
+        self.status_message: StatusMessage | None = None
         self._terminal_seen: bool = False
-        self._has_status_message: bool = False
-        self._status_message_text: str = ""
 
     @property
     def is_terminal(self) -> bool:
@@ -228,17 +235,7 @@ class _ResponseAggregator:
         logger.debug("event payload=%s", payload)
 
         if payload == "task":
-            task = event.task
-            self._absorb_task(task)
-
-        elif payload == "message":
-            msg = event.message
-            if msg.context_id:
-                self.context_id = msg.context_id
-            for part in msg.parts:
-                text = getattr(part, "text", None)
-                if text:
-                    self.agent_text_parts.append(text)
+            self._absorb_task(event.task)
 
         elif payload == "status_update":
             update = event.status_update
@@ -250,37 +247,11 @@ class _ResponseAggregator:
             self.state = state_name
             if state_name in _TERMINAL_STATES:
                 self._terminal_seen = True
-            # Capture the agent message embedded in the status update. For
-            # interrupted terminal states this *is* the reply the user needs
-            # to see (failure reason, auth challenge, or follow-up question);
-            # for normal states we just keep it as a fallback in case no
-            # agent text ever showed up via the message channel.
-            #
-            # The A2A spec lets a part carry either free text (oneof 'text')
-            # or structured data (oneof 'data', a protobuf Struct). When
-            # the agent is asking for structured input — e.g. an
-            # INPUT_REQUIRED form schema — the data oneof is the only
-            # content. JSON-encode that so the caller still has something
-            # to read instead of an empty string.
-            status_msg = update.status.message
-            if status_msg is not None:
-                for part in status_msg.parts:
-                    text = getattr(part, "text", None)
-                    if text:
-                        self._status_message_text = text
-                        if state_name in _INTERRUPTED_STATES:
-                            self._has_status_message = True
-                        continue
-                    # 'data' oneof: a protobuf Value carrying a form schema
-                    # or other structured prompt.
-                    if part.WhichOneof("content") == "data":
-                        data = part.data
-                        if data.WhichOneof("kind") is not None:
-                            self._status_message_text = json.dumps(
-                                MessageToDict(data), ensure_ascii=False
-                            )
-                            if state_name in _INTERRUPTED_STATES:
-                                self._has_status_message = True
+            # Capture the final status message as a structured field. The
+            # caller decides what to do with it (read .text, parse .data
+            # as a form schema, etc.) — we don't synthesize or fold.
+            if update.status.message is not None:
+                self.status_message = _to_status_message(update.status.message)
 
         elif payload == "artifact_update":
             # StreamResponse.artifact_update is a TaskArtifactUpdateEvent
@@ -288,47 +259,47 @@ class _ResponseAggregator:
             # uniform with the path used by task.artifacts.
             self._absorb_artifact(event.artifact_update.artifact)
 
+        # 'message' events: deliberately ignored. They are part of the
+        # message-channel stream we do not surface (see class docstring).
+
     def _absorb_task(self, task: Any) -> None:
+        from a2a import types as a2a_types
+
         if task.id:
             self.task_id = task.id
         if task.context_id:
             self.context_id = task.context_id
-        from a2a import types as a2a_types
 
         if task.status and task.status.state:
             state_name = a2a_types.TaskState.Name(task.status.state)
             self.state = state_name
             if state_name in _TERMINAL_STATES:
                 self._terminal_seen = True
-        # History may contain agent-side messages already produced.
-        for msg in task.history:
-            if msg.role == a2a_types.Role.ROLE_AGENT:
-                for part in msg.parts:
-                    text = getattr(part, "text", None)
-                    if text:
-                        self.agent_text_parts.append(text)
+        # A 'task' event can carry its own status.message (e.g. when an
+        # INPUT_REQUIRED task arrives before any status_update). Treat it
+        # the same way we'd treat a status_update.status.message.
+        if task.status and task.status.message is not None and self.status_message is None:
+            self.status_message = _to_status_message(task.status.message)
+
+        # task.history is intentionally NOT inspected — many agents push
+        # chain-of-thought onto the history channel, and we don't surface
+        # that as "the agent's reply".
+
         for art in task.artifacts:
             self._absorb_artifact(art)
 
     def _absorb_artifact(self, art: Any) -> None:
         parts: list[ArtifactPart] = []
         for p in art.parts:
-            data = _to_jsonable(getattr(p, "data", None))
             parts.append(
                 ArtifactPart(
                     text=getattr(p, "text", None) or None,
                     url=getattr(p, "url", None) or None,
-                    data=data,
+                    data=_to_jsonable(getattr(p, "data", None)),
                     filename=getattr(p, "filename", None) or None,
                     media_type=getattr(p, "media_type", None) or None,
                 )
             )
-            text = getattr(p, "text", None)
-            if text:
-                # Fold artifact text into agent_response so MCP callers see
-                # the agent's full textual reply, even when the agent only
-                # emits artifacts (e.g. the A2A v1.0 hello-world reference).
-                self.agent_text_parts.append(text)
         summary = ArtifactSummary(
             artifact_id=art.artifact_id or uuid.uuid4().hex,
             name=art.name or "",
@@ -339,18 +310,29 @@ class _ResponseAggregator:
         self.artifacts[summary.artifact_id] = summary
 
     def to_result(self) -> CallAgentResult:
-        # For interrupted terminal states (FAILED/REJECTED/INPUT_REQUIRED/
-        # AUTH_REQUIRED) the agent's status message is the reply the user
-        # needs; otherwise fall back to whatever the agent emitted on the
-        # message channel.
-        if self._has_status_message and self._status_message_text:
-            agent_response = self._status_message_text
-        else:
-            agent_response = "\n".join(t for t in self.agent_text_parts if t)
         return CallAgentResult(
             task_id=self.task_id,
             context_id=self.context_id,
             state=self.state,
-            agent_response=agent_response,
             artifacts=list(self.artifacts.values()),
+            status_message=self.status_message,
         )
+
+
+def _to_status_message(msg: Any) -> StatusMessage:
+    """Convert an a2a.types.Message (or protobuf equivalent) to StatusMessage."""
+    from a2a import types as a2a_types
+
+    role = a2a_types.Role.Name(msg.role) if msg.role else ""
+    parts: list[StatusMessagePart] = []
+    for p in msg.parts:
+        parts.append(
+            StatusMessagePart(
+                text=getattr(p, "text", None) or None,
+                data=_to_jsonable(getattr(p, "data", None)),
+                url=getattr(p, "url", None) or None,
+                filename=getattr(p, "filename", None) or None,
+                media_type=getattr(p, "media_type", None) or None,
+            )
+        )
+    return StatusMessage(role=role, parts=parts)

@@ -3,6 +3,12 @@
 These models shape the public API of a2a-mcp. The underlying A2A types are
 protobuf-based and exposed to MCP clients only via the JSON shape produced
 from these Pydantic models.
+
+Design note: this layer is a *transport*, not a *synthesizer*. We extract
+fields the agent actually emitted (artifacts, status message) and surface
+them as-is — we do not fold, merge, or join channels into a synthetic
+"agent_response" string. Callers that want a flat text reply should pick
+the channel they care about and concatenate themselves.
 """
 
 from __future__ import annotations
@@ -17,7 +23,7 @@ class ArtifactPart(BaseModel):
 
     text: str | None = None
     url: str | None = None
-    data: Any | None = None
+    data: Any = None
     filename: str | None = None
     media_type: str | None = None
 
@@ -29,6 +35,38 @@ class ArtifactSummary(BaseModel):
     name: str = ""
     description: str = ""
     parts: list[ArtifactPart] = Field(default_factory=list)
+
+
+class StatusMessagePart(BaseModel):
+    """A single part of an A2A message — text, structured data, or file ref.
+
+    Mirrors ``a2a.types.Part`` but with the protobuf ``Value`` already
+    coerced into plain Python primitives so the result serializes cleanly.
+    """
+
+    text: str | None = None
+    data: Any = None
+    url: str | None = None
+    filename: str | None = None
+    media_type: str | None = None
+
+
+class StatusMessage(BaseModel):
+    """Agent's message attached to the final task status update.
+
+    Populated only when the agent embeds a message in the status — typical
+    cases:
+      * ``state=TASK_STATE_INPUT_REQUIRED`` with a form schema in ``data``
+      * ``state=TASK_STATE_AUTH_REQUIRED`` with an auth challenge in ``text``
+      * ``state=TASK_STATE_FAILED`` / ``REJECTED`` with a reason in ``text``
+
+    For ordinary ``TASK_STATE_COMPLETED`` replies, the agent's text usually
+    lives in ``artifacts`` (or in the message-channel events we deliberately
+    do not surface — see CallAgentResult's docstring).
+    """
+
+    role: str = ""
+    parts: list[StatusMessagePart] = Field(default_factory=list)
 
 
 class CallAgentInput(BaseModel):
@@ -59,13 +97,38 @@ class CallAgentInput(BaseModel):
 
 
 class CallAgentResult(BaseModel):
-    """Result returned to MCP clients from a successful call_agent invocation."""
+    """Result returned to MCP clients from a successful call_agent invocation.
+
+    Fields are an extraction of the raw A2A response — nothing is folded,
+    merged, or synthesized across channels:
+
+    * ``task_id`` / ``context_id`` — identifiers; reuse the latter to continue
+      a multi-turn dialog.
+    * ``state`` — final task state (e.g. ``TASK_STATE_COMPLETED``,
+      ``TASK_STATE_INPUT_REQUIRED``).
+    * ``artifacts`` — every artifact the agent produced. For agents that emit
+      only artifacts (A2A v1.0 hello-world style), the chat reply lives here.
+    * ``status_message`` — the message attached to the final status, when
+      present. For ``INPUT_REQUIRED`` this typically carries a form schema
+      in ``parts[].data``; for ``FAILED``/``AUTH_REQUIRED`` it carries text.
+
+    Channels we deliberately do NOT surface here:
+      * ``task.history`` — caller can read it off the wire if needed; it
+        often contains the agent's chain-of-thought, which an LLM caller
+        usually does not want to relay to the user as "the agent's reply".
+      * The ``message`` event channel — for the same reason: many agents
+        push reasoning text there. If you need it, request a future field.
+    """
 
     task_id: str = ""
     context_id: str = ""
     state: str = Field(..., description="A2A task final state, e.g. TASK_STATE_COMPLETED.")
-    agent_response: str = Field(
-        default="",
-        description="Concatenated agent text reply, suitable for direct LLM consumption.",
-    )
     artifacts: list[ArtifactSummary] = Field(default_factory=list)
+    status_message: StatusMessage | None = Field(
+        default=None,
+        description=(
+            "Agent's message attached to the final status update; populated "
+            "for INPUT_REQUIRED / FAILED / AUTH_REQUIRED, usually empty for "
+            "COMPLETED."
+        ),
+    )
