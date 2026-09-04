@@ -104,7 +104,7 @@ MCP Client                                  a2a-mcp                             
 | 阶段 | 传输 | 启动方式 | 状态 |
 |------|------|---------|------|
 | MVP | stdio | `python -m a2a_mcp`（或显式 `--transport stdio`）| v0.1，已发布 |
-| v0.3 | Streamable HTTP | `python -m a2a_mcp --transport streamable-http --host 0.0.0.0 --port 8000` | v0.3，已发布 |
+| v0.3 | Streamable HTTP | `python -m a2a_mcp --transport streamable-http --host 0.0.0.0 --port 8866` | v0.3，已发布 |
 
 切换传输**无需修改业务代码**，仅改变启动命令或 `--transport` 标志。
 
@@ -135,17 +135,23 @@ A2A_MCP_TRANSPORT=streamable-http A2A_MCP_HTTP_PORT=9000 python -m a2a_mcp
 |------|------|------|------|
 | `agent_url` | `str` (URL) | 是 | 目标 A2A Agent 服务根地址，例如 `http://localhost:10000` |
 | `text` | `str` | 是 | 用户消息文本，作为 `Message` 的第一个 `TextPart` |
-| `context_id` | `str` | 否 | 多轮对话上下文 ID；不传则 SDK 自动生成 |
-| `metadata` | `dict[str, Any]` | 否 | 透传给 Agent 的元数据（user locale、客户端信息等） |
+| `context_id` | `str` | 否 | 多轮对话上下文 ID；不传则 SDK 自动生成；多轮时复用同一个值 |
+| `metadata` | `dict[str, Any]` | 否 | 自由格式键值对，挂到 A2A `Message.metadata` 上原样透传给 agent。Agent 只读它认识的 key，其余忽略。**常见用途**：tracing / correlation ID、tenant_id / user_id、locale、AB 分桶、feature flag。**a2a-mcp 不做任何检查或改写**，和协议上其他字段一样的纯透传 |
 
-**示例**：
+**示例（含 metadata）**：
 
 ```json
 {
   "agent_url": "http://localhost:10000",
   "text": "What's the weather in Tokyo tomorrow?",
   "context_id": "ctx-abc-123",
-  "metadata": {"locale": "zh-CN"}
+  "metadata": {
+    "tenant_id": "acme-corp",
+    "user_id": "u-91827",
+    "trace_id": "trace-2026-09-04-abc123",
+    "locale": "zh-CN",
+    "ab_bucket": "B"
+  }
 }
 ```
 

@@ -21,7 +21,7 @@ uv sync --extra dev
 uv run python -m a2a_mcp
 
 # Or run with streamable-http transport (for remote MCP clients)
-uv run python -m a2a_mcp --transport streamable-http --host 0.0.0.0 --port 8000
+uv run python -m a2a_mcp --transport streamable-http --host 0.0.0.0 --port 8866
 ```
 
 Then point your MCP client at it. For stdio, point Claude Desktop's MCP
@@ -34,7 +34,7 @@ client at `http://<host>:<port>/mcp`.
 |------|---------|-------------|
 | `--transport` | `stdio` | MCP transport: `stdio` or `streamable-http` |
 | `--host` | `127.0.0.1` | HTTP bind host (streamable-http only) |
-| `--port` | `8000` | HTTP bind port (streamable-http only) |
+| `--port` | `8866` | HTTP bind port (streamable-http only) |
 | `--path` | `/mcp` | HTTP endpoint path (streamable-http only) |
 
 ### Environment variables
@@ -45,7 +45,7 @@ client at `http://<host>:<port>/mcp`.
 | `A2A_MCP_LOG_LEVEL` | `INFO` | Logging level; logs go to stderr |
 | `A2A_MCP_TRANSPORT` | `stdio` | Same as `--transport`; CLI flag takes precedence |
 | `A2A_MCP_HTTP_HOST` | `127.0.0.1` | Same as `--host`; CLI flag takes precedence |
-| `A2A_MCP_HTTP_PORT` | `8000` | Same as `--port`; CLI flag takes precedence |
+| `A2A_MCP_HTTP_PORT` | `8866` | Same as `--port`; CLI flag takes precedence |
 | `A2A_MCP_HTTP_PATH` | `/mcp` | Same as `--path`; CLI flag takes precedence |
 
 Precedence for all of the above: **CLI flag > env var > built-in default**.
@@ -63,8 +63,8 @@ picks a binding both sides support (JSONRPC, HTTP+JSON, GRPC if
 |------|------|----------|-------------|
 | `agent_url` | `str` (URL) | ✅ | Target A2A agent root URL |
 | `text` | `str` | ✅ | User message text |
-| `context_id` | `str` | ❌ | Multi-turn dialog context ID |
-| `metadata` | `dict` | ❌ | Free-form metadata forwarded to agent |
+| `context_id` | `str` | ❌ | Multi-turn dialog context ID; reuse the same value to continue a session |
+| `metadata` | `dict[str, Any]` | ❌ | Free-form key/value pairs attached to the A2A `Message.metadata` field and forwarded as-is to the agent. The agent reads only the keys it knows about; everything else is ignored. Typical uses: tracing IDs, tenant/role hints, locale, A/B bucket, feature flags. Most demo agents ignore this entirely; production agents usually use it for routing, auth context, or observability. |
 
 ### Example Call
 
@@ -75,6 +75,27 @@ picks a binding both sides support (JSONRPC, HTTP+JSON, GRPC if
   "context_id": "user-session-42"
 }
 ```
+
+### Example Call with `metadata`
+
+```json
+{
+  "agent_url": "http://localhost:10000",
+  "text": "Refund my order",
+  "metadata": {
+    "tenant_id": "acme-corp",
+    "user_id": "u-91827",
+    "trace_id": "trace-2026-09-04-abc123",
+    "locale": "zh-CN",
+    "ab_bucket": "B"
+  }
+}
+```
+
+The agent picks up the keys it cares about (e.g. `tenant_id` for
+routing, `trace_id` for logging) and silently ignores the rest. a2a-mcp
+neither inspects nor rewrites the dict — it's pure pass-through, same
+as every other field on the wire.
 
 ### Example Response — successful chat reply (artifact channel)
 

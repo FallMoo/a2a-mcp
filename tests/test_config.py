@@ -28,7 +28,7 @@ def test_config_defaults(clean_env):
     assert cfg.log_level == "INFO"
     assert cfg.transport == "stdio"
     assert cfg.http_host == "127.0.0.1"
-    assert cfg.http_port == 8000
+    assert cfg.http_port == 8866
     assert cfg.http_path == "/mcp"
 
 
@@ -47,7 +47,7 @@ def test_config_http_env(clean_env, monkeypatch):
 def test_config_bad_port_falls_back_to_default(clean_env, monkeypatch):
     monkeypatch.setenv("A2A_MCP_HTTP_PORT", "not-a-number")
     cfg = Config.from_env()
-    assert cfg.http_port == 8000
+    assert cfg.http_port == 8866
 
 
 def test_config_log_level_uppercased(clean_env, monkeypatch):

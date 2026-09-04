@@ -38,7 +38,8 @@ class Config:
         A2A_MCP_HTTP_HOST     - host to bind for streamable-http (default
                                 127.0.0.1)
         A2A_MCP_HTTP_PORT     - port to bind for streamable-http (default
-                                8000)
+                                8866 — picked to dodge the usual 8000/
+                                8080/8888 clashes with dev services)
         A2A_MCP_HTTP_PATH     - URL path for the MCP endpoint (default
                                 "/mcp")
 
@@ -52,7 +53,7 @@ class Config:
     log_level: str = "INFO"
     transport: str = "stdio"
     http_host: str = "127.0.0.1"
-    http_port: int = 8000
+    http_port: int = 8866
     http_path: str = "/mcp"
 
     @classmethod
@@ -62,7 +63,7 @@ class Config:
             log_level=_get_str("A2A_MCP_LOG_LEVEL", "INFO").upper(),
             transport=_get_str("A2A_MCP_TRANSPORT", "stdio").lower(),
             http_host=_get_str("A2A_MCP_HTTP_HOST", "127.0.0.1"),
-            http_port=_get_int("A2A_MCP_HTTP_PORT", 8000),
+            http_port=_get_int("A2A_MCP_HTTP_PORT", 8866),
             http_path=_get_str("A2A_MCP_HTTP_PATH", "/mcp"),
         )
 

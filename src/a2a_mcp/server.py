@@ -35,14 +35,6 @@ _SERVER_INSTRUCTIONS = (
     "agent and receive its final result."
 )
 
-# CLI defaults; env vars (read via Config.from_env) override when CLI flags
-# are not provided, so existing deployments keep working without flags.
-_HTTP_DEFAULTS = {
-    "host": "127.0.0.1",
-    "port": 8000,
-    "path": "/mcp",
-}
-
 
 def _make_lifespan() -> Callable[[MCPServer], AbstractAsyncContextManager[dict[str, object]]]:
     """Build the lifespan async-context-manager that owns the singleton A2AClient.
@@ -140,7 +132,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--port",
         type=int,
         default=None,
-        help="HTTP port for streamable-http (default: 8000; or $A2A_MCP_HTTP_PORT).",
+        help="HTTP port for streamable-http (default: 8866; or $A2A_MCP_HTTP_PORT).",
     )
     parser.add_argument(
         "--path",
