@@ -55,17 +55,77 @@ GRPC if `a2a-sdk[grpc]` is installed).
 }
 ```
 
-### Example Response
+### Example Response — successful chat reply (artifact channel)
 
 ```json
 {
   "task_id": "8d2f1a4e-...",
   "context_id": "user-session-42",
   "state": "TASK_STATE_COMPLETED",
-  "agent_response": "• Discovery via Agent Card\n• Async tasks with streaming\n• JSON-RPC + HTTP+REST + gRPC transports",
-  "artifacts": []
+  "artifacts": [
+    {
+      "artifact_id": "...",
+      "name": "summary",
+      "description": "",
+      "parts": [
+        {"text": "• Discovery via Agent Card\n• Async tasks with streaming\n• JSON-RPC + HTTP+REST + gRPC transports", "url": null, "data": null, "filename": null, "media_type": null}
+      ]
+    }
+  ],
+  "status_message": null
 }
 ```
+
+### Example Response — INPUT_REQUIRED (structured form schema)
+
+```json
+{
+  "task_id": "f1ecb522-...",
+  "context_id": "f0a142c7...",
+  "state": "TASK_STATE_INPUT_REQUIRED",
+  "artifacts": [],
+  "status_message": {
+    "role": "ROLE_AGENT",
+    "parts": [
+      {
+        "text": null,
+        "data": {
+          "type": "form",
+          "form": {"type": "object", "required": ["request_id", "date", "amount", "purpose"], "properties": {...}},
+          "form_data": {"request_id": "request_id_5011658", "purpose": "显卡费用", "date": "", "amount": ""},
+          "instructions": null
+        },
+        "url": null, "filename": null, "media_type": null
+      }
+    ]
+  }
+}
+```
+
+### Result channels
+
+`call_agent` is a **transport**, not a synthesizer — it surfaces only what the
+agent actually emitted, on the channel it was emitted on. There is no
+flattened "agent_response" string; callers pick the channel that fits.
+
+| Field | Always set? | Meaning |
+|-------|-------------|---------|
+| `task_id` | yes | A2A task ID; reuse via `context_id` for multi-turn |
+| `context_id` | yes | Dialog context ID |
+| `state` | yes | Final task state — `TASK_STATE_COMPLETED`, `TASK_STATE_FAILED`, `TASK_STATE_INPUT_REQUIRED`, `TASK_STATE_AUTH_REQUIRED`, `TASK_STATE_CANCELED`, `TASK_STATE_REJECTED` |
+| `artifacts` | yes (may be `[]`) | Raw artifacts, latest-version-per-id. For agents that emit only artifacts (A2A v1.0 hello-world style), the chat reply lives here in `parts[].text`. |
+| `status_message` | only when the agent attached a message to the final status | Structured message with `parts[].text` and `parts[].data`. Typical for `INPUT_REQUIRED` (form schema in `data`), `FAILED` (reason in `text`), `AUTH_REQUIRED` (challenge in `text`). For plain `COMPLETED` it is usually `null`. |
+
+** Channels we deliberately do NOT surface:** `task.history` (often contains
+chain-of-thought) and the `message` event channel (same reason). If a future
+use case needs them, add an explicit opt-in field rather than re-synthesizing.
+
+**Client recipe by state:**
+
+- `TASK_STATE_COMPLETED` → read `artifacts[].parts[].text` for the chat reply
+- `TASK_STATE_INPUT_REQUIRED` → parse `status_message.parts[].data` for the form schema and `form_data`
+- `TASK_STATE_FAILED` / `TASK_STATE_REJECTED` → read `status_message.parts[].text` for the reason
+- `TASK_STATE_AUTH_REQUIRED` → read `status_message.parts[].text` for the challenge
 
 ## 📚 Documentation
 
@@ -74,10 +134,11 @@ GRPC if `a2a-sdk[grpc]` is installed).
 ## 🛣️ Roadmap
 
 - [x] v0.1 — stdio + auto protocol negotiation + streamed aggregation
-- [ ] v0.2 — Streamable HTTP transport
-- [ ] v0.3 — True streaming via MCP progress events
-- [ ] v0.4 — Multi-agent registry
-- [ ] v0.5 — Auth passthrough (Bearer / OAuth / mTLS)
+- [x] v0.2 — Pass-through response model: `artifacts` + `status_message` (no `agent_response` synthesis); INPUT_REQUIRED form schema exposed structured
+- [ ] v0.3 — Streamable HTTP transport
+- [ ] v0.4 — True streaming via MCP progress events
+- [ ] v0.5 — Multi-agent registry
+- [ ] v0.6 — Auth passthrough (Bearer / OAuth / mTLS)
 
 ## 📄 License
 

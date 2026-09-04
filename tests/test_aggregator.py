@@ -1,4 +1,11 @@
-"""Unit tests for the A2A response aggregator (no network required)."""
+"""Unit tests for the A2A response aggregator (no network required).
+
+These tests pin down the pass-through contract:
+  * artifacts are collected latest-version-per-id, no fold / no merge
+  * status.message is captured structured as status_message
+  * message events and task.history are deliberately ignored
+    (they would otherwise leak chain-of-thought as "the agent's reply")
+"""
 
 from __future__ import annotations
 
@@ -15,7 +22,9 @@ def _msg(message_id: str, text: str, role: int = a2a_types.Role.ROLE_AGENT) -> a
     )
 
 
-def _status_update_event(task_id: str, state_name: str, text: str | None = None) -> a2a_types.TaskStatusUpdateEvent:
+def _status_update_event(
+    task_id: str, state_name: str, text: str | None = None
+) -> a2a_types.TaskStatusUpdateEvent:
     state_enum = getattr(a2a_types.TaskState, state_name)
     status = a2a_types.TaskStatus()
     status.state = state_enum
@@ -24,12 +33,16 @@ def _status_update_event(task_id: str, state_name: str, text: str | None = None)
     return a2a_types.TaskStatusUpdateEvent(task_id=task_id, status=status)
 
 
-def _status_update(task_id: str, state_name: str, text: str | None = None) -> a2a_types.StreamResponse:
+def _status_update(
+    task_id: str, state_name: str, text: str | None = None
+) -> a2a_types.StreamResponse:
     """Wrap a status_update event into the StreamResponse the aggregator expects."""
     return _stream("status_update", status_update=_status_update_event(task_id, state_name, text))
 
 
-def _artifact_update(artifact_id: str, name: str, description: str, text: str) -> a2a_types.TaskArtifactUpdateEvent:
+def _artifact_update(
+    artifact_id: str, name: str, description: str, text: str
+) -> a2a_types.TaskArtifactUpdateEvent:
     art = a2a_types.Artifact(
         artifact_id=artifact_id,
         name=name,
@@ -39,7 +52,12 @@ def _artifact_update(artifact_id: str, name: str, description: str, text: str) -
     return a2a_types.TaskArtifactUpdateEvent(task_id="t-1", artifact=art)
 
 
-def _task(task_id: str, context_id: str, history_texts: list[str], artifacts: list[a2a_types.Artifact]) -> a2a_types.Task:
+def _task(
+    task_id: str,
+    context_id: str,
+    history_texts: list[str],
+    artifacts: list[a2a_types.Artifact],
+) -> a2a_types.Task:
     task = a2a_types.Task(id=task_id, context_id=context_id)
     task.status.state = a2a_types.TaskState.TASK_STATE_COMPLETED
     for text in history_texts:
@@ -63,6 +81,9 @@ def _stream(payload_name: str, **payload_kwargs) -> a2a_types.StreamResponse:
     return resp
 
 
+# ---- Terminal-state handling -----------------------------------------------
+
+
 def test_terminal_status_ends_aggregation():
     agg = _ResponseAggregator()
     agg.feed(_status_update("t-1", "TASK_STATE_WORKING"))
@@ -76,21 +97,80 @@ def test_terminal_status_ends_aggregation():
     assert result.task_id == "t-1"
 
 
-def test_agent_message_text_is_collected():
+# ---- Channels that are NOT surfaced ----------------------------------------
+
+
+def test_message_events_are_ignored():
+    """Message events must not surface anywhere — they often carry CoT."""
     agg = _ResponseAggregator()
-    agg.feed(_stream("message", message=_msg("m1", "Hello ")))
-    agg.feed(_stream("message", message=_msg("m2", "world.")))
+    agg.feed(_stream("message", message=_msg("m1", "thinking aloud")))
+    agg.feed(_stream("message", message=_msg("m2", "more thinking")))
     agg.feed(_status_update("t-1", "TASK_STATE_COMPLETED"))
     result = agg.to_result()
-    assert result.agent_response == "Hello \nworld."
+    assert result.artifacts == []
+    assert result.status_message is None
 
 
-def test_failed_status_carries_error_text():
+def test_task_history_is_ignored():
+    """task.history is deliberately not collected — CoT lives there."""
+    task = _task(
+        task_id="t-1",
+        context_id="ctx-1",
+        history_texts=["From history A", "From history B"],
+        artifacts=[],
+    )
+    agg = _ResponseAggregator()
+    agg.feed(_stream("task", task=task))
+    agg.feed(_status_update("t-1", "TASK_STATE_COMPLETED"))
+    result = agg.to_result()
+    assert result.task_id == "t-1"
+    assert result.context_id == "ctx-1"
+    assert result.state == "TASK_STATE_COMPLETED"
+    assert result.artifacts == []
+    assert result.status_message is None
+
+
+# ---- status_message on interrupted states ----------------------------------
+
+
+def test_failed_status_surfaces_message_structured():
     agg = _ResponseAggregator()
     agg.feed(_status_update("t-1", "TASK_STATE_FAILED", text="Rate limit exceeded"))
     result = agg.to_result()
     assert result.state == "TASK_STATE_FAILED"
-    assert result.agent_response == "Rate limit exceeded"
+    assert result.status_message is not None
+    assert result.status_message.parts[0].text == "Rate limit exceeded"
+
+
+def test_input_required_status_surfaces_form_data_structured():
+    """Form schema arrives in status.message parts[].data as a Value."""
+    state_enum = a2a_types.TaskState.TASK_STATE_INPUT_REQUIRED
+    status = a2a_types.TaskStatus(state=state_enum)
+    # Build a status message with a data part carrying a form schema.
+    msg = a2a_types.Message(message_id="m-form", role=a2a_types.Role.ROLE_AGENT, parts=[])
+    form_part = a2a_types.Part()
+    form_part.data.string_value = "form"  # any non-empty kind on the Value
+    msg.parts.append(form_part)
+    status.message.CopyFrom(msg)
+    event = a2a_types.TaskStatusUpdateEvent(task_id="t-1", status=status)
+
+    agg = _ResponseAggregator()
+    agg.feed(_stream("status_update", status_update=event))
+    result = agg.to_result()
+    assert result.state == "TASK_STATE_INPUT_REQUIRED"
+    assert result.status_message is not None
+    assert result.status_message.parts[0].data is not None
+
+
+def test_empty_status_message_yields_none():
+    """A status update with no .message must not produce an empty StatusMessage."""
+    agg = _ResponseAggregator()
+    agg.feed(_status_update("t-1", "TASK_STATE_COMPLETED"))  # no text → no .message
+    result = agg.to_result()
+    assert result.status_message is None
+
+
+# ---- Artifact handling ------------------------------------------------------
 
 
 def test_artifact_collected_with_latest_winning():
@@ -106,20 +186,28 @@ def test_artifact_collected_with_latest_winning():
     assert result.artifacts[0].parts[0].text == "second"
 
 
-def test_task_history_aggregates_agent_text():
-    """When the final task arrives with history, agent texts are folded in."""
-    task = _task(
-        task_id="t-1",
-        context_id="ctx-1",
-        history_texts=["From history"],
-        artifacts=[],
-    )
+def test_artifact_text_is_not_folded_into_status_message():
+    """Artifact text lives in artifacts[].parts[].text only — nowhere else."""
     agg = _ResponseAggregator()
-    agg.feed(_stream("message", message=_msg("m-stream", "From stream")))
-    agg.feed(_stream("task", task=task))
+    agg.feed(_stream("artifact_update", artifact_update=_artifact_update("a-1", "x", "", "artifact only")))
+    agg.feed(_status_update("t-1", "TASK_STATE_COMPLETED"))
     result = agg.to_result()
-    assert result.task_id == "t-1"
-    assert result.context_id == "ctx-1"
-    assert result.state == "TASK_STATE_COMPLETED"
-    assert "From stream" in result.agent_response
-    assert "From history" in result.agent_response
+    assert result.status_message is None
+    assert result.artifacts[0].parts[0].text == "artifact only"
+
+
+def test_task_artifacts_are_passed_through():
+    art = a2a_types.Artifact(
+        artifact_id="a-1",
+        name="receipt",
+        description="",
+        parts=[a2a_types.Part(text="paid $20")],
+    )
+    task = _task(task_id="t-1", context_id="ctx-1", history_texts=[], artifacts=[art])
+    agg = _ResponseAggregator()
+    agg.feed(_stream("task", task=task))
+    agg.feed(_status_update("t-1", "TASK_STATE_COMPLETED"))
+    result = agg.to_result()
+    assert len(result.artifacts) == 1
+    assert result.artifacts[0].name == "receipt"
+    assert result.artifacts[0].parts[0].text == "paid $20"

@@ -1,8 +1,8 @@
 # A2A-MCP 设计文档
 
-> 版本：v0.1（设计稿）
-> 日期：2026-09-03
-> 状态：待评审
+> 版本：v0.2（实现稿）
+> 日期：2026-09-04
+> 状态：已实现，校准文档
 
 ## 1. 背景与目标
 
@@ -138,30 +138,74 @@ MCP Client                                  a2a-mcp                             
 
 ### 4.2 返回值
 
-**成功**：
+`call_agent` 是 **transport，不是 synthesizer**——只把 agent 在协议各通道实际发出的内容透传出来，**不**做跨通道的合并 / fold / join。
+
+**成功（COMPLETED，artifact 通道带回聊天回复）：**
 
 ```json
 {
   "task_id": "8d2f1a4e-...",
   "context_id": "ctx-abc-123",
   "state": "TASK_STATE_COMPLETED",
-  "agent_response": "Tomorrow in Tokyo: cloudy, 18-24°C, light rain in the afternoon.",
   "artifacts": [
     {
-      "name": "weather_report.json",
-      "parts": [{"text": "{...}"}]
+      "artifact_id": "...",
+      "name": "weather_report",
+      "description": "",
+      "parts": [{"text": "Tomorrow in Tokyo: cloudy, 18-24°C...", "url": null, "data": null, "filename": null, "media_type": null}]
     }
-  ]
+  ],
+  "status_message": null
 }
 ```
 
-**字段含义**：
+**成功（INPUT_REQUIRED，结构化表单 schema 在 `status_message.parts[].data`）：**
 
-- `task_id`：A2A Task ID，用于后续查询
-- `context_id`：会话上下文 ID
-- `state`：A2A Task 终态（`TASK_STATE_COMPLETED` / `TASK_STATE_FAILED` / `TASK_STATE_CANCELLED` / `TASK_STATE_INPUT_REQUIRED`）
-- `agent_response`：Agent 的最终文本回复（从 `Task.artifacts` / `Task.history` 抽取，便于 LLM 直接消费）
-- `artifacts`：Agent 输出的结构化 artifacts（如有）
+```json
+{
+  "task_id": "f1ecb522-...",
+  "context_id": "f0a142c7...",
+  "state": "TASK_STATE_INPUT_REQUIRED",
+  "artifacts": [],
+  "status_message": {
+    "role": "ROLE_AGENT",
+    "parts": [
+      {
+        "text": null,
+        "data": {
+          "type": "form",
+          "form": {"type": "object", "required": ["request_id", "date", "amount", "purpose"], "properties": {...}},
+          "form_data": {"request_id": "...", "purpose": "显卡费用", "date": "", "amount": ""},
+          "instructions": null
+        },
+        "url": null, "filename": null, "media_type": null
+      }
+    ]
+  }
+}
+```
+
+**字段含义：**
+
+| 字段 | 来源 | 说明 |
+|------|------|------|
+| `task_id` | status_update / task 事件 | A2A Task ID，配合 `context_id` 做多轮 |
+| `context_id` | status_update / task 事件 | 会话上下文 ID |
+| `state` | 最后一次 status 的 state | 终态：`COMPLETED` / `FAILED` / `CANCELED` / `REJECTED` / `INPUT_REQUIRED` / `AUTH_REQUIRED` |
+| `artifacts` | task.artifacts + artifact_update | 原样保留，按 `artifact_id` 取最后版本。**不做 fold、不做合并、不和 message 通道交叉** |
+| `status_message` | status_update.status.message（或 task.status.message） | 仅当 agent 在终态挂了 message 时填充；结构化：`parts[].text` 和 `parts[].data` 任一可空 |
+
+**主动不暴露的通道：**
+- `task.history`——很多 agent 把 chain-of-thought 放在这里，混在 message 里。读 history 当"agent 回复"会把 CoT 泄漏给用户。
+- `message` 事件通道——同上。
+- 不再有 `agent_response` 这种合成的扁平字符串字段；调用方按 `state` 分流：
+
+| 终态 | 客户端读哪个字段 |
+|------|------------------|
+| `COMPLETED` | `artifacts[].parts[].text` |
+| `INPUT_REQUIRED` | `status_message.parts[].data`（form schema）+ `parts[].data.form_data` |
+| `FAILED` / `REJECTED` | `status_message.parts[].text` |
+| `AUTH_REQUIRED` | `status_message.parts[].text` |
 
 **失败**（抛 MCP 错误）：
 
@@ -171,9 +215,11 @@ ToolError: A2A 调用失败: <错误类型>: <错误描述>
 
 ### 4.3 内部实现要点
 
-- **流式聚合**：内部使用 `client.send_message_streaming()`，订阅 `TaskStatusUpdateEvent` 直到 `final=true`，再 `client.get_task()` 拉取最终 `Task` 对象。
-- **超时控制**：默认 60s，通过环境变量 `A2A_MCP_TIMEOUT` 可配。
-- **文本抽取**：从 `Task.history` 中筛选 `Role.agent` 的消息，合并所有 `TextPart.text` 得到 `agent_response`。
+- **流式聚合**：内部使用 `client.send_message()` 拿到事件迭代器，依次 `feed()` 给 `_ResponseAggregator`：遇到 terminal state（`COMPLETED` / `FAILED` / `CANCELED` / `REJECTED` / `INPUT_REQUIRED` / `AUTH_REQUIRED`）就停，最多再 drain 5s 处理跟在终态后面的 artifact。
+- **超时控制**：默认 60s，通过环境变量 `A2A_MCP_TIMEOUT` 可配；超时抛 `A2ACallError`（→ MCP `ToolError`）。
+- **artifact 合并策略**：按 `artifact_id` 取最后版本（latest-wins）。同 ID 的多次 `artifact_update` 视为流式增量。
+- **protobuf Value 清洗**：artifact / status message 的 `data` oneof 是 `google.protobuf.struct_pb2.Value`，Pydantic 序列化直接拒绝。`_to_jsonable()` 把未设置的 Value 转 None，已设置的 Value 经 `MessageToDict()` 转 Python 原语。
+- **刻意不做**：不读 `task.history`、不读 `message` 事件、不 fold artifact text 进任何字符串字段——这三个是设计上要避开的合成路径。
 
 ---
 
@@ -235,11 +281,12 @@ a2a-mcp/
 
 | 版本 | 范围 | 状态 |
 |------|------|------|
-| v0.1 | stdio + 自动协商 + 流式聚合 + 核心字段 | 本文档目标 |
-| v0.2 | Streamable HTTP transport | 待启动 |
-| v0.3 | 流式返回（增量 token 推送，需 MCP 侧 SSE 支持） | 待启动 |
-| v0.4 | 多 Agent 注册中心（yaml 配置 + agent_id 路由） | 待启动 |
-| v0.5 | 鉴权代理（Bearer / OAuth / mTLS 透传） | 待启动 |
+| v0.1 | stdio + 自动协商 + 流式聚合 + 核心字段（`agent_response` 合成） | 已发布（commits 46da7b5 之前） |
+| v0.2 | **Pass-through 重构**：去掉 `agent_response` 合成，新增 `status_message` 结构化通道；INPUT_REQUIRED 的 form schema 暴露为 dict | 已发布（commits cfe576d / 3e2bcf1 / 000944f） |
+| v0.3 | Streamable HTTP transport | 待启动 |
+| v0.4 | 流式返回（增量 token 推送，需 MCP 侧 SSE 支持） | 待启动 |
+| v0.5 | 多 Agent 注册中心（yaml 配置 + agent_id 路由） | 待启动 |
+| v0.6 | 鉴权代理（Bearer / OAuth / mTLS 透传） | 待启动 |
 
 ---
 
