@@ -10,6 +10,7 @@ Responsibilities:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from typing import Any
@@ -59,6 +60,19 @@ _TERMINAL_STATES = {
     "TASK_STATE_COMPLETED",
     "TASK_STATE_FAILED",
     "TASK_STATE_CANCELED",
+    "TASK_STATE_REJECTED",
+    "TASK_STATE_INPUT_REQUIRED",
+    "TASK_STATE_AUTH_REQUIRED",
+}
+
+# "Interrupted" terminal states: the task is over from the aggregator's
+# perspective, but the agent embedded a human-facing message in the
+# final status (a failure reason, an auth challenge, or the next
+# question it needs answered). The status message must surface as
+# `agent_response` — otherwise callers see an empty reply and have no
+# way to know what the agent is asking.
+_INTERRUPTED_STATES = {
+    "TASK_STATE_FAILED",
     "TASK_STATE_REJECTED",
     "TASK_STATE_INPUT_REQUIRED",
     "TASK_STATE_AUTH_REQUIRED",
@@ -198,8 +212,8 @@ class _ResponseAggregator:
         self.agent_text_parts: list[str] = []
         self.artifacts: dict[str, ArtifactSummary] = {}
         self._terminal_seen: bool = False
-        self._has_error_message: bool = False
-        self._error_text: str = ""
+        self._has_status_message: bool = False
+        self._status_message_text: str = ""
 
     @property
     def is_terminal(self) -> bool:
@@ -236,18 +250,37 @@ class _ResponseAggregator:
             self.state = state_name
             if state_name in _TERMINAL_STATES:
                 self._terminal_seen = True
-            # Capture agent message embedded in status (e.g. failed status carries reason).
+            # Capture the agent message embedded in the status update. For
+            # interrupted terminal states this *is* the reply the user needs
+            # to see (failure reason, auth challenge, or follow-up question);
+            # for normal states we just keep it as a fallback in case no
+            # agent text ever showed up via the message channel.
+            #
+            # The A2A spec lets a part carry either free text (oneof 'text')
+            # or structured data (oneof 'data', a protobuf Struct). When
+            # the agent is asking for structured input — e.g. an
+            # INPUT_REQUIRED form schema — the data oneof is the only
+            # content. JSON-encode that so the caller still has something
+            # to read instead of an empty string.
             status_msg = update.status.message
             if status_msg is not None:
                 for part in status_msg.parts:
                     text = getattr(part, "text", None)
                     if text:
-                        self._error_text = text
-                        if state_name in {
-                            "TASK_STATE_FAILED",
-                            "TASK_STATE_REJECTED",
-                        }:
-                            self._has_error_message = True
+                        self._status_message_text = text
+                        if state_name in _INTERRUPTED_STATES:
+                            self._has_status_message = True
+                        continue
+                    # 'data' oneof: a protobuf Value carrying a form schema
+                    # or other structured prompt.
+                    if part.WhichOneof("content") == "data":
+                        data = part.data
+                        if data.WhichOneof("kind") is not None:
+                            self._status_message_text = json.dumps(
+                                MessageToDict(data), ensure_ascii=False
+                            )
+                            if state_name in _INTERRUPTED_STATES:
+                                self._has_status_message = True
 
         elif payload == "artifact_update":
             # StreamResponse.artifact_update is a TaskArtifactUpdateEvent
@@ -306,9 +339,14 @@ class _ResponseAggregator:
         self.artifacts[summary.artifact_id] = summary
 
     def to_result(self) -> CallAgentResult:
-        agent_response = "\n".join(t for t in self.agent_text_parts if t)
-        if self._has_error_message and self._error_text:
-            agent_response = self._error_text
+        # For interrupted terminal states (FAILED/REJECTED/INPUT_REQUIRED/
+        # AUTH_REQUIRED) the agent's status message is the reply the user
+        # needs; otherwise fall back to whatever the agent emitted on the
+        # message channel.
+        if self._has_status_message and self._status_message_text:
+            agent_response = self._status_message_text
+        else:
+            agent_response = "\n".join(t for t in self.agent_text_parts if t)
         return CallAgentResult(
             task_id=self.task_id,
             context_id=self.context_id,
