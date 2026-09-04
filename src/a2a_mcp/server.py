@@ -98,12 +98,10 @@ async def call_agent(
         Field(
             default=None,
             description=(
-                "Free-form key/value pairs attached to the A2A Message.metadata "
-                "and forwarded as-is to the agent. The agent reads only the keys "
-                "it knows about; everything else is ignored. Typical uses: "
-                "tracing IDs, tenant/role hints, locale, A/B bucket, feature flags. "
-                "Most demo agents ignore this entirely; production agents usually "
-                "use it for routing, auth context, or observability."
+                "Free-form key/value pairs forwarded to the agent as A2A "
+                "Message.metadata. Agent reads only the keys it knows; "
+                "everything else is ignored. Common keys: trace_id, "
+                "tenant_id, user_id, locale, ab_bucket."
             ),
         ),
     ] = None,
@@ -121,7 +119,7 @@ async def call_agent(
         agent_url: Root URL of the target A2A agent (http/https).
         text: User message text to send.
         context_id: Multi-turn dialog context ID; auto-generated if omitted.
-        metadata: Free-form key/value pairs forwarded to the agent.
+        metadata: Free-form k/v forwarded as A2A Message.metadata.
 
     Returns:
         CallAgentResult with task_id, context_id, state, artifacts, and the
