@@ -122,6 +122,7 @@ A2A_MCP_TRANSPORT=streamable-http A2A_MCP_HTTP_PORT=9000 python -m a2a_mcp
 - 默认绑定 `127.0.0.1`；要远程访问需显式 `--host 0.0.0.0`（明示不安全，避免误暴露）
 - 不带 auth；鉴权代理放到上游 nginx / Envoy（v0.6 再做 MCP 原生 auth）
 - 单一进程、单 httpx 客户端；并发请求共享连接池，单请求超时仍受 `A2A_MCP_TIMEOUT` 控制
+- **stateless per the 2026-07-28 MCP spec**：`stateless_http=True` 写死。`call_agent` 本来就是 stateless request/response，没有 server-side session 价值——无状态顺带免去 session-leak、滚动升级不丢状态这些麻烦。
 
 ---
 

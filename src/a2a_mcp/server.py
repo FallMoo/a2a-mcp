@@ -222,6 +222,12 @@ def main() -> None:
         host=host,
         port=port,
         streamable_http_path=path,
+        # Stateless per the 2026-07-28 MCP spec: no server-side session
+        # map; every request gets a fresh Context. call_agent is a stateless
+        # request/response so there is no value in tracking sessions, and
+        # stateless mode fits horizontal-scaling / container / k8s
+        # deployments cleanly.
+        stateless_http=True,
     )
 
 

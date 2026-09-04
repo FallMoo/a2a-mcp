@@ -210,7 +210,7 @@ use case needs them, add an explicit opt-in field rather than re-synthesizing.
 
 - [x] v0.1 — stdio + auto protocol negotiation + streamed aggregation
 - [x] v0.2 — Pass-through response model: `artifacts` + `status_message` (no `agent_response` synthesis); INPUT_REQUIRED form schema exposed structured
-- [x] v0.3 — Streamable HTTP transport (`--transport streamable-http`)
+- [x] v0.3 — Streamable HTTP transport (`--transport streamable-http`), **stateless** per the 2026-07-28 MCP spec
 - [ ] v0.4 — True streaming via MCP progress events
 - [ ] v0.5 — Multi-agent registry
 - [ ] v0.6 — Auth passthrough (Bearer / OAuth / mTLS)
